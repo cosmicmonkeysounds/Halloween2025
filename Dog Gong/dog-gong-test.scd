@@ -14,18 +14,19 @@ s.waitForBoot {
     var fatigueLevel = 0, fatigueVelocity = 0, fatigueTarget = 0;
 
     // Spring parameters for excitement
-    var excRisingFreq = 2.0, excRisingDamp = 0.3;   // Faster rise
-    var excFallingFreq = 0.5, excFallingDamp = 0.7;  // Slower fall
+    var excRisingFreq = 4.0, excRisingDamp = 0.3;    // Faster rise
+    var excFallingFreq = 1.0, excFallingDamp = 1.9;  // Slower fall
 
     // Spring parameters for fatigue
     var fatRisingFreq = 0.3, fatRisingDamp = 0.8;    // Slow fatigue buildup
     var fatFallingFreq = 0.8, fatFallingDamp = 0.4;  // Moderate recovery
 
     // Dog behavior parameters
-    var noiseBoost = 0.08;           // How much noise adds to excitement target
-    var baseFeedback = 0.1;          // Base pack feedback strength
-    var excitementThreshold = 0.25;  // Min excitement to start barking
-	var maxDogs = 25;                 // Max simultaneous dogs
+    var noiseBoost = 0.1;            // How much noise adds to excitement target
+    var baseFeedback = 0.05;         // Base pack feedback strength
+    var excitementThreshold = 0.01;  // Min excitement to start barking (very low)
+    var maxDogs = 25;                // Max simultaneous dogs
+    var dogCurveExp = 1.5;           // Exponential curve for dog scaling (>1 = more dogs at high excitement)
     var activeDogs = 0;
 
     // Timing
@@ -105,7 +106,7 @@ s.waitForBoot {
             // === EXCITEMENT DYNAMICS ===
             // Calculate excitement target (only increases from noise, pack feedback adds directly to level)
             if(noiseLevel > 0) {
-                excitementTarget = (excitementTarget + (noiseLevel * noiseBoost * dt)).min(0.95);
+                excitementTarget = (excitementTarget + (noiseLevel * noiseBoost * dt)).min(noiseLevel);
             } {
                 // Natural target decay when no noise
                 excitementTarget = (excitementTarget - (dt * 0.2)).max(0);
@@ -186,7 +187,7 @@ s.waitForBoot {
     // Dog barking logic routine
     fork {
         loop {
-            var shouldBark, numDogs, barkProbability;
+            var shouldBark, targetDogs, currentDogs, numDogs, barkProbability;
             var effectiveFeedback;
 
             // Calculate effective feedback (reduced by fatigue)
@@ -195,24 +196,29 @@ s.waitForBoot {
             // Higher excitement = more feedback, but modulated by fatigue
             effectiveFeedback = effectiveFeedback * (1.0 + (excitementLevel * 2));
 
-            // Calculate bark probability
-            barkProbability = excitementLevel * (1.0 - (fatigueLevel * 0.5));
+            // Calculate target number of dogs based on excitement with exponential curve
+            // pow(excitement, dogCurveExp) gives us the curve shape
+            targetDogs = (excitementLevel.pow(dogCurveExp) * maxDogs).round.asInteger;
+
+            // Calculate bark probability (how often new dogs join)
+            barkProbability = excitementLevel.linlin(0, 1, 0.1, 0.95);
 
             // Determine if dogs should bark
-            if(excitementLevel > excitementThreshold) {
+            if(excitementLevel > excitementThreshold and: { activeDogs < targetDogs }) {
                 shouldBark = barkProbability.coin;
 
                 if(shouldBark) {
+                    // Calculate how many new dogs to add
+                    numDogs = (targetDogs - activeDogs).min(3); // Add up to 3 dogs at once
+                    numDogs = numDogs.max(1); // At least 1 if we're barking
+
                     if(dogBuffers.isNil) {
                         // Use synthesized barks if no samples loaded
-                        if(activeDogs < maxDogs) {
-                            numDogs = (excitementLevel.linlin(0.3, 1, 1, 4).round).asInteger;
-                            numDogs = numDogs.min(maxDogs - activeDogs).min(1);
-
-                            numDogs.do {
+                        numDogs.do {
+                            if(activeDogs < maxDogs) {
                                 var pan = 1.0.rand2;
                                 var freq = rrand(200, 800);
-                                var amp = excitementLevel.linlin(0, 1, 0.3, 0.9);
+                                var amp = excitementLevel.linlin(0, 1, 0.2, 0.9);
                                 var dur = rrand(0.2, 0.5);
 
                                 Synth(\synthBark, [
@@ -225,27 +231,24 @@ s.waitForBoot {
                                 activeDogs = activeDogs + 1;
 
                                 // Direct excitement boost from pack feedback
-                                excitementLevel = (excitementLevel + (effectiveFeedback * rrand(0.5, 1.0))).min(0.999);
+                                excitementLevel = (excitementLevel + (effectiveFeedback * rrand(0.3, 0.7))).min(0.999);
 
                                 fork {
                                     dur.wait;
                                     activeDogs = activeDogs - 1;
                                 };
 
-                                rrand(0.05, 0.15).wait;
+                                rrand(0.02, 0.1).wait;
                             };
                         };
                     } {
                         // Use real dog samples
-                        if(activeDogs < maxDogs) {
-                            numDogs = (excitementLevel.linlin(0.3, 1, 1, 4).round).asInteger;
-                            numDogs = numDogs.min(maxDogs - activeDogs);
-
-                            numDogs.do {
+                        numDogs.do {
+                            if(activeDogs < maxDogs) {
                                 var buffer = dogBuffers.choose;
                                 var pan = 1.0.rand2;
                                 var rate = rrand(0.85, 1.15);
-                                var amp = excitementLevel.linlin(0, 1, 0.4, 1.0);
+                                var amp = excitementLevel.linlin(0, 1, 0.3, 1.0);
                                 var duration = buffer.duration / rate;
 
                                 Synth(\dogBark, [
@@ -258,14 +261,14 @@ s.waitForBoot {
                                 activeDogs = activeDogs + 1;
 
                                 // Direct excitement boost from pack feedback
-                                excitementLevel = (excitementLevel + (effectiveFeedback * rrand(0.5, 1.0))).min(0.999);
+                                excitementLevel = (excitementLevel + (effectiveFeedback * rrand(0.3, 0.7))).min(0.999);
 
                                 fork {
                                     duration.wait;
                                     activeDogs = activeDogs - 1;
                                 };
 
-                                rrand(0.05, 0.15).wait;
+                                rrand(0.02, 0.1).wait;
                             };
                         };
                     };
